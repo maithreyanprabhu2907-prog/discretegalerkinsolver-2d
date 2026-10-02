@@ -7,23 +7,15 @@ pub mod time;
 pub use basis::sin_ic;
 pub use mesh::Mesh;
 pub use solution::Solution;
-pub use solver::{project_initial_condition, rk4_step};
+pub use solver::{Scratch, project_initial_condition, rk4_step};
 pub use time::TimeIntegrator;
 
-fn main() {
-    let mesh_size = 10;
-    let mesh = Mesh::new(mesh_size);
-    let mut sol = Solution::new(mesh_size);
-    let mut time = TimeIntegrator::new(0.0, 1.0, mesh.n_element_width(0));
-    project_initial_condition(&mut sol, &mesh, sin_ic);
+fn main() {}
 
-    while time.t < time.t_end {
-        rk4_step(&mut sol, &mesh, time.dt);
-        time.t += time.dt
-    }
-}
 #[cfg(test)]
 mod tests {
+    use crate::solver::Scratch;
+
     use super::*;
 
     #[test]
@@ -32,12 +24,13 @@ mod tests {
         let mesh = Mesh::new(mesh_size);
         let mut sol = Solution::new(mesh_size);
         let mut time = TimeIntegrator::new(0.0, 1.0, mesh.n_element_width(0));
+        let mut scratch = Scratch::new(sol.coefficients.len());
 
         project_initial_condition(&mut sol, &mesh, sin_ic);
         let c0 = sol.coefficients.clone();
 
         while time.t < time.t_end {
-            rk4_step(&mut sol, &mesh, time.dt);
+            rk4_step(&mut sol, &mesh, &mut scratch, time.dt);
             time.t += time.dt;
         }
 

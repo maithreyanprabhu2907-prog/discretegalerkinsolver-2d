@@ -20,11 +20,11 @@ pub fn legendre_deriv(p: usize, xi: f64) -> f64 {
     }
 }
 
-pub fn eval_solution(sol: &Solution, mesh: &Mesh, k: usize, x: f64) -> f64 {
+pub fn eval_solution(coeffs: &[f64], mesh: &Mesh, k: usize, x: f64) -> f64 {
     let mut result = 0.0;
     let reference = to_reference(x, mesh.x_left[k], mesh.n_element_width(k));
     for i in 0..=P {
-        result += sol.coefficients[(P + 1) * k + i] * legendre(i, reference);
+        result += coeffs[(P + 1) * k + i] * legendre(i, reference);
     }
     result
 }
@@ -44,7 +44,7 @@ pub fn project_initial_condition(sol: &mut Solution, mesh: &Mesh, u0: fn(f64) ->
     }
 }
 
-pub fn compute_residual(sol: &Solution, mesh: &Mesh, res: &mut Vec<f64>) {
+pub fn compute_residual(coeffs: &[f64], mesh: &Mesh, res: &mut Vec<f64>) {
     let n = mesh.n_elements();
     for k in 0..n {
         let h = mesh.n_element_width(k);
@@ -54,14 +54,14 @@ pub fn compute_residual(sol: &Solution, mesh: &Mesh, res: &mut Vec<f64>) {
                 let xi = GAUSS_POINTS[q];
                 let x = to_physical(xi, mesh.x_left[k], h);
                 vol_sum +=
-                    GAUSS_WEIGHTS[q] * legendre_deriv(j, xi) * eval_solution(sol, mesh, k, x);
+                    GAUSS_WEIGHTS[q] * legendre_deriv(j, xi) * eval_solution(coeffs, mesh, k, x);
             }
-            let u_right = eval_solution(sol, mesh, k, mesh.x_right[k]);
+            let u_right = eval_solution(coeffs, mesh, k, mesh.x_right[k]);
 
             let u_left = if k == 0 {
-                eval_solution(sol, mesh, n - 1, mesh.x_right[n - 1])
+                eval_solution(coeffs, mesh, n - 1, mesh.x_right[n - 1])
             } else {
-                eval_solution(sol, mesh, k - 1, mesh.x_right[k - 1])
+                eval_solution(coeffs, mesh, k - 1, mesh.x_right[k - 1])
             };
 
             res[(P + 1) * k + j] = (2.0 * j as f64 + 1.0) / h
@@ -70,51 +70,62 @@ pub fn compute_residual(sol: &Solution, mesh: &Mesh, res: &mut Vec<f64>) {
     }
 }
 
-pub fn rk4_step(sol: &mut Solution, mesh: &Mesh, dt: f64) {
-    let size = sol.coefficients.len();
-    let mut k1 = vec![0.0; size];
-    let mut k2 = vec![0.0; size];
-    let mut k3 = vec![0.0; size];
-    let mut k4 = vec![0.0; size];
+pub struct Scratch {
+    pub k1: Vec<f64>,
+    pub k2: Vec<f64>,
+    pub k3: Vec<f64>,
+    pub k4: Vec<f64>,
+    pub c_temp1: Vec<f64>,
+    pub c_temp2: Vec<f64>,
+    pub c_temp3: Vec<f64>,
+}
 
-    compute_residual(sol, mesh, &mut k1);
-    let mut c_temp1: Vec<f64> = sol
-        .coefficients
-        .iter()
-        .zip(k1.iter())
-        .map(|(ci, ki)| ci + (dt / 2.0) * ki)
-        .collect();
+impl Scratch {
+    pub fn new(size: usize) -> Self {
+        Scratch {
+            k1: vec![0.0; size],
+            k2: vec![0.0; size],
+            k3: vec![0.0; size],
+            k4: vec![0.0; size],
+            c_temp1: vec![0.0; size],
+            c_temp2: vec![0.0; size],
+            c_temp3: vec![0.0; size],
+        }
+    }
+}
 
-    let instance1 = Solution {
-        coefficients: c_temp1,
-        n_dof: P + 1,
-    };
+pub fn rk4_step(sol: &mut Solution, mesh: &Mesh, scratch: &mut Scratch, dt: f64) {
+    compute_residual(&sol.coefficients, mesh, &mut scratch.k1);
+    for (out, (ci, ki)) in scratch
+        .c_temp1
+        .iter_mut()
+        .zip(sol.coefficients.iter().zip(scratch.k1.iter()))
+    {
+        *out = ci + (dt / 2.0) * ki;
+    }
 
-    compute_residual(&instance1, mesh, &mut k2);
-    let mut c_temp2: Vec<f64> = sol
-        .coefficients
-        .iter()
-        .zip(k2.iter())
-        .map(|(ci, ki)| ci + (dt / 2.0) * ki)
-        .collect();
-    let instance2 = Solution {
-        coefficients: c_temp2,
-        n_dof: P + 1,
-    };
+    compute_residual(&scratch.c_temp1, mesh, &mut scratch.k2);
+    for (out, (ci, ki)) in scratch
+        .c_temp2
+        .iter_mut()
+        .zip(sol.coefficients.iter().zip(scratch.k2.iter()))
+    {
+        *out = ci + (dt / 2.0) * ki;
+    }
 
-    compute_residual(&instance2, mesh, &mut k3);
-    let mut c_temp3: Vec<f64> = sol
-        .coefficients
-        .iter()
-        .zip(k3.iter())
-        .map(|(ci, ki)| ci + dt * ki)
-        .collect();
-    let instance3 = Solution {
-        coefficients: c_temp3,
-        n_dof: P + 1,
-    };
-    compute_residual(&instance3, mesh, &mut k4);
+    compute_residual(&scratch.c_temp2, mesh, &mut scratch.k3);
+    for (out, (ci, ki)) in scratch
+        .c_temp3
+        .iter_mut()
+        .zip(sol.coefficients.iter().zip(scratch.k3.iter()))
+    {
+        *out = ci + dt * ki;
+    }
+
+    compute_residual(&scratch.c_temp3, mesh, &mut scratch.k4);
+
     for i in 0..sol.coefficients.len() {
-        sol.coefficients[i] += (dt / 6.0) * (k1[i] + 2.0 * k2[i] + 2.0 * k3[i] + k4[i]);
+        sol.coefficients[i] += (dt / 6.0)
+            * (scratch.k1[i] + 2.0 * scratch.k2[i] + 2.0 * scratch.k3[i] + scratch.k4[i]);
     }
 }
